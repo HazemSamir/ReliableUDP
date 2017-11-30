@@ -73,9 +73,36 @@ int main()
 	server_addr.sin_family = AF_INET;
 	server_addr.sin_port = htons(8080);
 
-	char *filename = "test.txt";
-	int sendFlag = sendto(sockfd, filename, strlen(filename), 0,
-			(struct sockaddr *) &server_addr, sizeof(server_addr));
+	char *filename = "test.jpg";
+
+	while(true) {
+        if (sendto(sockfd, filename, strlen(filename), 0,
+                (struct sockaddr *) &server_addr, sizeof(server_addr)) == -1) {
+            perror("client: error sending pckt!");
+            exit(-1);
+        }
+
+        struct timeval tv;
+        tv.tv_sec = 0;
+        tv.tv_usec = 100000;
+        if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+            perror("client: error to set timeout");
+            exit(-1);
+        }
+        char buf[BUFFER_SIZE];
+        if ((recvfrom(sockfd, buf, BUFFER_SIZE - 1, 0, (struct sockaddr *) &server_addr,
+                    &server_addr_len)) < 0) {
+            perror("client: timeout");
+            continue;
+        }
+        cout << "client: received ACK from server" << endl;
+        tv.tv_usec = 0;
+        if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+            perror("client: error to reset timeout");
+            exit(-1);
+        }
+        break;
+	}
 
     packet curr_pckt;
     ofstream of;
