@@ -81,7 +81,7 @@ bool recvack(const int seqno, const int sockfd, struct sockaddr_in* client_addr,
     bool acked = true;
     if ((recv_bytes = recvfrom(sockfd, buf, ACK_SIZE, 0, (struct sockaddr *) client_addr,
             &client_addr_len)) != ACK_SIZE) {
-        perror("server: recvfrom to ack failed");
+        perror("server: recvfrom - ack failed");
         acked = false;
     }
     tv.tv_usec = 0;
@@ -112,15 +112,15 @@ int stopwait_sendto(const int sockfd, const packet* pckt, struct sockaddr_in* cl
     int pckt_size = PCKT_HEADER_SIZE + pckt->len;
 
     do {
-        if (!isdropped()) {
+        if (isdropped()) {
+            cout << pckt->seqno << "- dropped" << endl;
+        } else {
             if ((sent = sendto(sockfd, (void *) pckt, pckt_size, 0,
                             (struct sockaddr *) client_addr, sizeof(*client_addr))) == -1) {
                 perror("server: error sending pckt!");
                 exit(-1);
             }
             cout << pckt->seqno << "- sent " << sent << " bytes" << endl;
-        } else {
-            cout << pckt->seqno << "- dropped" << endl;
         }
     } while(!recvack(pckt->seqno, sockfd, client_addr));
     return sent;
