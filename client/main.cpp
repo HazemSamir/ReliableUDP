@@ -17,6 +17,23 @@
 
 using namespace std;
 
+/* Data-only packets */
+struct packet {
+    /* Header */
+    uint16_t cksum;
+    uint16_t len;
+    uint32_t seqno;
+    /* Data */
+    char data[BUFFER_SIZE];
+};
+
+/* Ack-only packets are only 8 bytes */
+struct ack_packet {
+    uint16_t cksum;
+    uint16_t len;
+    uint32_t ackno;
+};
+
 int create_socket(int port) {
     int sockfd;
     if ((sockfd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0) {
@@ -49,10 +66,13 @@ int main()
 	server_addr.sin_family = AF_INET;
 	server_addr.sin_port = htons(8080);
 
-	char *filename = "test.txt";
+	char *filename = "test.png";
 	int sendFlag = sendto(sockfd, filename, strlen(filename), 0,
 			(struct sockaddr *) &server_addr, sizeof(server_addr));
 
+    packet curr_pckt;
+    ofstream of;
+    of.open(filename);
     while(true) {
         /* Block until receive a request from a client */
         cout << "client: waiting to receive..." << endl;
@@ -62,9 +82,14 @@ int main()
                 &server_addr_len)) < 0) {
             perror("client: recvfrom failed");
         }
-        buf[recv_bytes] = '\0';
-        cout << "client: received buffer: \"" << buf << "\"" << endl;
+        memcpy(&curr_pckt, buf, recv_bytes);
+        if (curr_pckt.len == 0) {
+            break;
+        }
+        cout << "client: received " << recv_bytes << " bytes" << endl;
+        cout << "client: data.len= " << curr_pckt.len << " bytes" << endl;
+        of.write(curr_pckt.data, curr_pckt.len);
     }
-
+    of.close();
     return 0;
 }

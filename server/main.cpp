@@ -78,6 +78,9 @@ int send_file(const char* file_name, const int sockfd, struct sockaddr_in* clien
     packet curr_pckt;
     curr_pckt.seqno = 0;
 
+    cout << "server: opened file: \"" << file_name << "\"" << endl;
+    cout << "file_size: " << file_size << " bytes" << endl;
+
     for (long sent_bytes = 0; sent_bytes < file_size; sent_bytes+=curr_pckt.len, curr_pckt.seqno++) {
         curr_pckt.cksum = 1;
 		curr_pckt.len = fread(curr_pckt.data, 1, BUFFER_SIZE, fd);
@@ -91,6 +94,18 @@ int send_file(const char* file_name, const int sockfd, struct sockaddr_in* clien
             perror("server: error sending pckt!");
             exit(-1);
         }
+        cout << "sent " << sent << " bytes" << endl;
+    }
+
+    curr_pckt.len = 0;
+    int pckt_size = PCKT_HEADER_SIZE;
+    memcpy(buf, &curr_pckt, pckt_size);
+
+    int sent;
+    if ((sent = sendto(sockfd, buf, pckt_size, 0,
+                    (struct sockaddr *) client_addr, sizeof(*client_addr))) == -1) {
+        perror("server: error sending pckt!");
+        exit(-1);
     }
 
     return file_size;
@@ -117,14 +132,6 @@ int main()
         }
 		buf[recv_bytes] = '\0';
 		cout << "server: received buffer: " << buf << endl;
-
-		char* ack = "e4ta!";
-		int sent;
-		if ((sent = sendto(sockfd, ack, strlen(ack), 0,
-                        (struct sockaddr *) &client_addr, sizeof(client_addr))) == -1) {
-            perror("server: error sending ack!");
-            exit(-1);
-		}
 
 		send_file(buf, sockfd, &client_addr);
     }
