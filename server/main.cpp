@@ -14,7 +14,7 @@
 #include <fstream>
 #include <random>
 
-#define BUFFER_SIZE 10
+#define BUFFER_SIZE 200
 #define PCKT_HEADER_SIZE 8
 #define ACK_SIZE 8
 
@@ -71,7 +71,7 @@ bool recvack(const int seqno, const int sockfd, struct sockaddr_in* client_addr,
     tv.tv_sec = 0;
     tv.tv_usec = time_out;
     if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
-        perror("client: error to set timeout");
+        perror("server: error to set timeout");
         exit(-1);
     }
 
@@ -86,7 +86,7 @@ bool recvack(const int seqno, const int sockfd, struct sockaddr_in* client_addr,
     }
     tv.tv_usec = 0;
     if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
-        perror("client: error to reset timeout");
+        perror("server: error to reset timeout");
         exit(-1);
     }
     if (acked) {
@@ -124,6 +124,18 @@ int stopwait_sendto(const int sockfd, const packet* pckt, struct sockaddr_in* cl
         }
     } while(!recvack(pckt->seqno, sockfd, client_addr));
     return sent;
+}
+
+void send_ack(const int sockfd, struct sockaddr_in* client_addr) {
+
+    ack_packet first_ack;
+    first_ack.ackno = -1;
+
+    if ((sendto(sockfd, (void *) &first_ack, ACK_SIZE, 0,
+                            (struct sockaddr *) client_addr, sizeof(*client_addr))) == -1) {
+        perror("server: error sending ACK pckt!");
+        exit(-1);
+    }
 }
 
 /// Return number of bytes sent
@@ -175,6 +187,8 @@ int main()
         }
 		buf[recv_bytes] = '\0';
 		cout << "server: received buffer: " << buf << endl;
+
+		send_ack(sockfd, &client_addr);
 
 		send_file(buf, sockfd, &client_addr);
     }
