@@ -12,9 +12,11 @@
 #include <vector>
 #include <sys/time.h>
 #include <fstream>
+#include <random>
 
-#define BUFFER_SIZE 200
+#define BUFFER_SIZE 10
 #define PCKT_HEADER_SIZE 8
+#define ACK_SIZE 8
 
 using namespace std;
 
@@ -64,6 +66,66 @@ long find_file_size(FILE* fd) {
 	return size;
 }
 
+bool recvack(const int seqno, const int sockfd, struct sockaddr_in* client_addr, const long time_out=100000) {
+    struct timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = time_out;
+    if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+        perror("client: error to set timeout");
+        exit(-1);
+    }
+
+    socklen_t client_addr_len = sizeof(*client_addr);
+    char buf[ACK_SIZE];
+    int recv_bytes = 0;
+    bool acked = true;
+    if ((recv_bytes = recvfrom(sockfd, buf, ACK_SIZE, 0, (struct sockaddr *) client_addr,
+            &client_addr_len)) != ACK_SIZE) {
+        perror("server: recvfrom to ack failed");
+        acked = false;
+    }
+    tv.tv_usec = 0;
+    if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+        perror("client: error to reset timeout");
+        exit(-1);
+    }
+    if (acked) {
+        ack_packet ack;
+        memcpy(&ack, buf, ACK_SIZE);
+        return ack.ackno == seqno;
+    }
+    return false;
+}
+
+bool isdropped(double plp=0.0, double seed=-1.0) {
+    static std::random_device rd;
+    static std::mt19937 gen(rd());
+    if (seed > 0.0) {
+        gen.seed(seed);
+    }
+    static std::discrete_distribution<> d({1.0 - plp, plp});
+    return d(gen);
+}
+
+int stopwait_sendto(const int sockfd, const packet* pckt, struct sockaddr_in* client_addr) {
+    int sent;
+    int pckt_size = PCKT_HEADER_SIZE + pckt->len;
+
+    do {
+        if (!isdropped()) {
+            if ((sent = sendto(sockfd, (void *) pckt, pckt_size, 0,
+                            (struct sockaddr *) client_addr, sizeof(*client_addr))) == -1) {
+                perror("server: error sending pckt!");
+                exit(-1);
+            }
+            cout << pckt->seqno << "- sent " << sent << " bytes" << endl;
+        } else {
+            cout << pckt->seqno << "- dropped" << endl;
+        }
+    } while(!recvack(pckt->seqno, sockfd, client_addr));
+    return sent;
+}
+
 /// Return number of bytes sent
 /// -1 if error happened
 int send_file(const char* file_name, const int sockfd, struct sockaddr_in* client_addr) {
@@ -74,7 +136,6 @@ int send_file(const char* file_name, const int sockfd, struct sockaddr_in* clien
     }
 
     long file_size = find_file_size(fd);
-    char buf[sizeof(packet)];
     packet curr_pckt;
     curr_pckt.seqno = 0;
 
@@ -84,29 +145,11 @@ int send_file(const char* file_name, const int sockfd, struct sockaddr_in* clien
     for (long sent_bytes = 0; sent_bytes < file_size; sent_bytes+=curr_pckt.len, curr_pckt.seqno++) {
         curr_pckt.cksum = 1;
 		curr_pckt.len = fread(curr_pckt.data, 1, BUFFER_SIZE, fd);
-
-        int pckt_size = PCKT_HEADER_SIZE + curr_pckt.len;
-        memcpy(buf, &curr_pckt, pckt_size);
-
-        int sent;
-        if ((sent = sendto(sockfd, buf, pckt_size, 0,
-                        (struct sockaddr *) client_addr, sizeof(*client_addr))) == -1) {
-            perror("server: error sending pckt!");
-            exit(-1);
-        }
-        cout << "sent " << sent << " bytes" << endl;
+        stopwait_sendto(sockfd, &curr_pckt, client_addr);
     }
 
     curr_pckt.len = 0;
-    int pckt_size = PCKT_HEADER_SIZE;
-    memcpy(buf, &curr_pckt, pckt_size);
-
-    int sent;
-    if ((sent = sendto(sockfd, buf, pckt_size, 0,
-                    (struct sockaddr *) client_addr, sizeof(*client_addr))) == -1) {
-        perror("server: error sending pckt!");
-        exit(-1);
-    }
+    stopwait_sendto(sockfd, &curr_pckt, client_addr);
 
     return file_size;
 }
@@ -114,11 +157,11 @@ int send_file(const char* file_name, const int sockfd, struct sockaddr_in* clien
 int main()
 {
     int sockfd = create_socket(8080);
-
+    /* set PLP and random seed */
+    isdropped(0.1);
     while(true) {
         struct sockaddr_in client_addr;
         socklen_t client_addr_len = sizeof(client_addr);
-
 
 
 		/* Block until receive a request from a client */

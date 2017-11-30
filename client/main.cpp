@@ -13,7 +13,7 @@
 #include <sys/time.h>
 #include <fstream>
 
-#define BUFFER_SIZE 200
+#define BUFFER_SIZE 250
 
 using namespace std;
 
@@ -56,6 +56,13 @@ int create_socket(int port) {
 	return sockfd;
 }
 
+int send_ack(const int ackno, const int sockfd, struct sockaddr_in *server_addr) {
+    ack_packet ack;
+    ack.ackno = ackno;
+    return sendto(sockfd, &ack, sizeof ack, 0,
+			(struct sockaddr *) server_addr, sizeof(*server_addr));
+}
+
 int main()
 {
     int sockfd = create_socket(5555);
@@ -66,13 +73,14 @@ int main()
 	server_addr.sin_family = AF_INET;
 	server_addr.sin_port = htons(8080);
 
-	char *filename = "test.png";
+	char *filename = "test.txt";
 	int sendFlag = sendto(sockfd, filename, strlen(filename), 0,
 			(struct sockaddr *) &server_addr, sizeof(server_addr));
 
     packet curr_pckt;
     ofstream of;
     of.open(filename);
+    int curr_pckt_no = 0;
     while(true) {
         /* Block until receive a request from a client */
         cout << "client: waiting to receive..." << endl;
@@ -82,13 +90,20 @@ int main()
                 &server_addr_len)) < 0) {
             perror("client: recvfrom failed");
         }
-        memcpy(&curr_pckt, buf, recv_bytes);
+        curr_pckt = *(packet*) buf;
+        cout << "packet: " << curr_pckt_no << endl;
+        cout << "client: received " << recv_bytes << " bytes" << endl;
+        cout << "client: data.len = " << curr_pckt.len << " bytes" << endl;
+        if (curr_pckt.seqno == curr_pckt_no) {
+            of.write(curr_pckt.data, curr_pckt.len);
+            ++curr_pckt_no;
+        }
+        if (curr_pckt.seqno <= curr_pckt_no) {
+            send_ack(curr_pckt.seqno, sockfd, &server_addr);
+        }
         if (curr_pckt.len == 0) {
             break;
         }
-        cout << "client: received " << recv_bytes << " bytes" << endl;
-        cout << "client: data.len= " << curr_pckt.len << " bytes" << endl;
-        of.write(curr_pckt.data, curr_pckt.len);
     }
     of.close();
     return 0;
