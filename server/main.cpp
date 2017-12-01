@@ -19,7 +19,6 @@
 
 #define BUFFER_SIZE 200
 #define PCKT_HEADER_SIZE 8
-#define ACK_SIZE 8
 
 #define STOP_AND_WAIT false
 
@@ -42,26 +41,47 @@ struct ack_packet {
     uint32_t ackno;
 };
 
-int create_socket(int port) {
-    int sockfd;
-    if ((sockfd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0) {
+namespace udp_util {
+
+struct udpsocket {
+    int fd;
+    sockaddr_in client_addr;
+    socklen_t client_addr_len = sizeof(client_addr);
+};
+
+bool randrop(double plp=0.0, double seed=-1.0) {
+    static mutex mtx;
+    static std::random_device rd;
+    static std::mt19937 gen(rd());
+    if (seed > 0.0) {
+        gen.seed(seed);
+    }
+    static std::discrete_distribution<> d({1.0 - plp, plp});
+    mtx.lock();
+    int rand_idx = d(gen);
+    mtx.unlock();
+    return rand_idx;
+}
+
+udpsocket create_socket(const int port) {
+    udpsocket s;
+    if ((s.fd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0) {
 		perror("cannot create socket");
 		exit(1);
 	}
 
-	struct sockaddr_in addr;
-    memset((char*) &addr, 0, sizeof(addr));
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(port);
-	addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    memset((char*) &s.client_addr, 0, sizeof(s.client_addr));
+	s.client_addr.sin_family = AF_INET;
+	s.client_addr.sin_port = htons(port);
+	s.client_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
 	/* bind to the address to which the service will be offered */
-	if (bind(sockfd, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
+	if (bind(s.fd, (sockaddr *) &s.client_addr, sizeof(s.client_addr)) < 0) {
 		perror("bind failed");
 		exit(1);
 	}
 
-	return sockfd;
+	return s;
 }
 
 void set_socket_timeout(const int sockfd, const long timeout) {
@@ -84,6 +104,19 @@ void reset_socket_timeout(const int sockfd) {
     }
 }
 
+int recvtimed(udpsocket* s, void* buf, const int bufsize, const long t) {
+    set_socket_timeout(s->fd, t);
+    int recved = recvfrom(s->fd, buf, bufsize, 0, (sockaddr*) &s->client_addr, &s->client_addr_len);
+    reset_socket_timeout(s->fd);
+    return recved;
+}
+
+int send(udpsocket* s, const void* buf, const int bufsize) {
+    return sendto(s->fd, (void*) buf, bufsize, 0, (sockaddr*) &s->client_addr, sizeof(s->client_addr));
+}
+
+} // socket_util
+
 long find_file_size(FILE* fd) {
     fseek(fd, 0L, SEEK_END);
 	long size = ftell(fd);
@@ -91,63 +124,39 @@ long find_file_size(FILE* fd) {
 	return size;
 }
 
-bool isdropped(double plp=0.0, double seed=-1.0) {
-    static mutex mtx;
-    static std::random_device rd;
-    static std::mt19937 gen(rd());
-    if (seed > 0.0) {
-        gen.seed(seed);
-    }
-    static std::discrete_distribution<> d({1.0 - plp, plp});
-    mtx.lock();
-    int rand_idx = d(gen);
-    mtx.unlock();
-    return rand_idx;
-}
-
 namespace stop_and_wait {
 
-bool recv_ack(const int seqno, const int sockfd, const sockaddr_in* client_addr, const long time_out=100000) {
-    set_socket_timeout(sockfd, time_out);
+const long TIME_OUT = 100000; // 0.1 sec
 
-    socklen_t client_addr_len = sizeof(*client_addr);
-    char buf[ACK_SIZE];
+bool recv_ack(const int seqno, udp_util::udpsocket* sock, const long time_out=TIME_OUT) {
+    ack_packet ack;
     int recv_bytes = 0;
-    bool acked = true;
-    if ((recv_bytes = recvfrom(sockfd, buf, ACK_SIZE, 0, (struct sockaddr *) client_addr,
-            &client_addr_len)) != ACK_SIZE) {
+    if ((recv_bytes = udp_util::recvtimed(sock, &ack, sizeof(ack), time_out)) != sizeof(ack)) {
         perror("server: recvfrom - ack failed");
-        acked = false;
+        return false;
     }
-    reset_socket_timeout(sockfd);
-    if (acked) {
-        ack_packet ack;
-        memcpy(&ack, buf, ACK_SIZE);
-        return ack.ackno == seqno;
-    }
-    return false;
+    return ack.ackno == seqno;
 }
 
-int sw_sendto(const int sockfd, const sockaddr_in* client_addr, const packet* pckt) {
+int sw_sendto(udp_util::udpsocket* sock, const packet* pckt) {
     int sent;
     int pckt_size = PCKT_HEADER_SIZE + pckt->len;
 
     do {
-        if (isdropped()) {
+        if (udp_util::randrop()) {
             cout << pckt->seqno << "- dropped" << endl;
         } else {
-            if ((sent = sendto(sockfd, (void *) pckt, pckt_size, 0,
-                            (struct sockaddr *) client_addr, sizeof(*client_addr))) == -1) {
+            if ((sent = udp_util::send(sock, pckt, pckt_size)) == -1) {
                 perror("server: error sending pckt!");
                 exit(-1);
             }
             cout << pckt->seqno << "- sent " << sent << " bytes" << endl;
         }
-    } while(!recv_ack(pckt->seqno, sockfd, client_addr));
+    } while(!recv_ack(pckt->seqno, sock));
     return sent;
 }
 
-int send_file(const int sockfd, const sockaddr_in* client_addr, FILE* fd) {
+int send_file(udp_util::udpsocket* sock, FILE* fd) {
     long file_size = find_file_size(fd);
     packet curr_pckt;
     curr_pckt.seqno = 0;
@@ -158,13 +167,13 @@ int send_file(const int sockfd, const sockaddr_in* client_addr, FILE* fd) {
     for (long sent_bytes = 0; sent_bytes < file_size; sent_bytes+=curr_pckt.len, curr_pckt.seqno++) {
         curr_pckt.cksum = 1;
 		curr_pckt.len = fread(curr_pckt.data, 1, BUFFER_SIZE, fd);
-        if ((sent = sw_sendto(sockfd, client_addr, &curr_pckt) < 0)) {
+        if ((sent = sw_sendto(sock, &curr_pckt) < 0)) {
             return sent;
         }
     }
 
     curr_pckt.len = 0;
-    if ((sent = sw_sendto(sockfd, client_addr, &curr_pckt) < 0)) {
+    if ((sent = sw_sendto(sock, &curr_pckt) < 0)) {
         return sent;
     }
 
@@ -173,19 +182,9 @@ int send_file(const int sockfd, const sockaddr_in* client_addr, FILE* fd) {
 
 } // namespace stop_and_wait
 
-void send_ack(const int sockfd, struct sockaddr_in* client_addr) {
-
-    ack_packet first_ack;
-    first_ack.ackno = -1;
-
-    if ((sendto(sockfd, (void *) &first_ack, ACK_SIZE, 0,
-                            (struct sockaddr *) client_addr, sizeof(*client_addr))) == -1) {
-        perror("server: error sending ACK pckt!");
-        exit(-1);
-    }
-}
-
 namespace selective_repeat {
+
+const long TIME_OUT = 500000; // 0.5 sec
 
 enum PacketStatus {
     NOT_ACKED,
@@ -197,22 +196,22 @@ mutex cout_lock;
 mutex status_lock;
 vector<packet> pckts;
 vector<PacketStatus> status;
+/// TODO test with window = 1
 const int window_size = 20;
 // atomic<int> g_seqno;
 atomic<bool> g_finished;
 
-void pckt_thread_handle(const int sockfd, const sockaddr_in* client_addr, const int id, const long time_out) {
+void pckt_thread_handle(udp_util::udpsocket* sock, const int id, const long time_out) {
     int sent;
     int pckt_size = PCKT_HEADER_SIZE + pckts[id].len;
 
     while(true) {
-        if (isdropped()) {
+        if (udp_util::randrop()) {
             cout_lock.lock();
-            cout << pckts[id].seqno << "- dropped" << endl;
+            cout << pckts[id].seqno << "/" << id << " is dropped" << endl;
             cout_lock.unlock();
         } else {
-            if ((sent = sendto(sockfd, &pckts[id], pckt_size, 0,
-                            (struct sockaddr *) client_addr, sizeof(*client_addr))) == -1) {
+            if ((sent = udp_util::send(sock, &pckts[id], pckt_size)) == -1) {
                 perror("server: error sending pckt!");
                 exit(-1);
             }
@@ -233,37 +232,32 @@ void pckt_thread_handle(const int sockfd, const sockaddr_in* client_addr, const 
     }
 }
 
-void ack_listener_thread(const int sockfd, const sockaddr_in* client_addr, const long time_out) {
-    set_socket_timeout(sockfd, time_out);
+void ack_listener_thread(udp_util::udpsocket* sock, const long time_out) {
     while(!g_finished) {
-        socklen_t client_addr_len = sizeof(*client_addr);
         ack_packet ack;
-        int recv_bytes = 0;
-        if ((recv_bytes = recvfrom(sockfd, &ack, sizeof ack, 0, (struct sockaddr *) client_addr,
-                &client_addr_len)) != sizeof ack) {
-            continue;
-        }
-        int pckt_id = ack.ackno;
-        if (pckt_id >= 0) {
-            status_lock.lock();
-            status[pckt_id] = ACKED;
-            status_lock.unlock();
+        if (udp_util::recvtimed(sock, &ack, sizeof(ack), time_out) == sizeof(ack)) {
+            int pckt_id = ack.ackno;
+            if (pckt_id >= 0) {
+                status_lock.lock();
+                status[pckt_id] = ACKED;
+                status_lock.unlock();
 
-            cout_lock.lock();
-            cout << "packet " << ack.ackno << "/" << pckt_id << " acked!" << endl;
-            cout_lock.unlock();
+                cout_lock.lock();
+                cout << "packet " << ack.ackno << "/" << pckt_id << " acked!" << endl;
+                cout_lock.unlock();
+            }
         }
     }
-    reset_socket_timeout(sockfd);
 }
 
-int send_file(const int sockfd, const sockaddr_in* client_addr, FILE* fd) {
+int send_file(udp_util::udpsocket* sock, FILE* fd) {
     long file_size = find_file_size(fd);
     long read_data = 0;
     cout << "file_size: " << file_size << " bytes" << endl;
 
     {
-        thread ack_listener(ack_listener_thread, sockfd, client_addr, 10000);
+        /* Launch a listener thread for ACKs */
+        thread ack_listener(ack_listener_thread, sock, TIME_OUT);
         ack_listener.detach();
     }
 
@@ -271,6 +265,7 @@ int send_file(const int sockfd, const sockaddr_in* client_addr, FILE* fd) {
     int base = 0;
     bool finished_file = false;
     while(!g_finished) {
+        /// TODO use circular queue
         // advance window base to next unACKed seq#
         for (; base < pckts.size(); ++base) {
             status_lock.lock();
@@ -280,8 +275,6 @@ int send_file(const int sockfd, const sockaddr_in* client_addr, FILE* fd) {
             }
             status_lock.unlock();
         }
-        // pckts.erase(pckts.begin(), pckts.begin() + base);
-        // status.erase(status.begin(), status.begin() + base);
 
         for (; pckts.size() - base < window_size && !finished_file;) {
             status_lock.lock();
@@ -300,7 +293,7 @@ int send_file(const int sockfd, const sockaddr_in* client_addr, FILE* fd) {
             }
             pckts[id].seqno = g_seqno++;
 
-            thread th(pckt_thread_handle, sockfd, client_addr, id, 100000);
+            thread th(pckt_thread_handle, sock, id, 100000);
             th.detach();
 
             read_data += pckts[id].len;
@@ -313,7 +306,7 @@ int send_file(const int sockfd, const sockaddr_in* client_addr, FILE* fd) {
 } // namespace selective_repeat
 
 /// Return number of bytes sent or -1 if error happened
-int send_file(const char* file_name, const int sockfd, struct sockaddr_in* client_addr) {
+int send_file(const char* file_name, udp_util::udpsocket* sock) {
     FILE* fd = fopen(file_name, "r");
     if (fd == NULL) {
         perror("server: File NOT FOUND 404");
@@ -324,41 +317,45 @@ int send_file(const char* file_name, const int sockfd, struct sockaddr_in* clien
 
     int sent = -1;
     if (STOP_AND_WAIT) {
-        sent = stop_and_wait::send_file(sockfd, client_addr, fd);
+        sent = stop_and_wait::send_file(sock, fd);
     } else {
-        sent = selective_repeat::send_file(sockfd, client_addr, fd);
+        sent = selective_repeat::send_file(sock, fd);
     }
     fclose(fd);
     return sent;
 }
 
-/// TODO test with window = 1
+void send_first_ack(udp_util::udpsocket* sock) {
+    ack_packet ack;
+    ack.ackno = -1;
+
+    if (udp_util::send(sock, &ack, sizeof(ack)) == -1) {
+        perror("server: error sending first ACK pckt!");
+        exit(-1);
+    }
+}
 
 int main()
 {
-    int sockfd = create_socket(8080);
+    udp_util::udpsocket sock = udp_util::create_socket(8080);
     /* set PLP and random seed */
-    isdropped(0.0);
+    udp_util::randrop(0.0);
 
     while(true) {
-        struct sockaddr_in client_addr;
-        socklen_t client_addr_len = sizeof(client_addr);
-
 		/* Block until receiving a request from a client */
 		cout << "Server is waiting to receive..." << endl;
 		char buf[BUFFER_SIZE];
 		int recv_bytes = 0;
-		if ((recv_bytes = recvfrom(sockfd, buf, BUFFER_SIZE - 1, 0, (struct sockaddr *) &client_addr,
-				&client_addr_len)) < 0) {
+		if ((recv_bytes = recvfrom(sock.fd, buf, BUFFER_SIZE - 1, 0, (sockaddr*) &sock.client_addr,
+				&sock.client_addr_len)) < 0) {
 			perror("server: main recvfrom failed");
 			exit(-1);
         }
 		buf[recv_bytes] = '\0';
 		cout << "server: received buffer: " << buf << endl;
 
-		send_ack(sockfd, &client_addr);
-
-		send_file(buf, sockfd, &client_addr);
+		send_first_ack(&sock);
+		send_file(buf, &sock);
     }
     return 0;
 }
