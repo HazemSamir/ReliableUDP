@@ -19,7 +19,7 @@
 #include <thread>
 
 #define BUFFER_SIZE 200
-#define FILE_BUFFER_SIZE 10000
+#define FILE_BUFFER_SIZE 100000
 #define PCKT_HEADER_SIZE 8
 
 #define STOP_AND_WAIT false
@@ -180,19 +180,49 @@ int send_file(udp_util::udpsocket* sock, FILE* fd, int file_size) {
 } // namespace stop_and_wait
 
 namespace selective_repeat {
-
 const long TIME_OUT = 500000; // 0.5 sec
 
 mutex cout_lock;
 mutex ack_lock;
 bool acked[FILE_BUFFER_SIZE];
-time_t time_sent[FILE_BUFFER_SIZE];
+timeval time_sent[FILE_BUFFER_SIZE];
 char file_data[FILE_BUFFER_SIZE];
-int first_byte_seqno;
 
-/// TODO test with window = 1
-const int window_size = 100;
+atomic<int> first_byte_seqno;
+
+mutex window_lock;
+int window_size = BUFFER_SIZE;
 atomic<bool> g_finished;
+
+void reset_global() {
+    g_finished = false;
+    window_lock.lock();
+    window_size = BUFFER_SIZE;
+    window_lock.unlock();
+    first_byte_seqno = 0;
+}
+
+void decrease_window() {
+    window_lock.lock();
+    window_size /= 2;
+    window_size = max(window_size, BUFFER_SIZE);
+    window_lock.unlock();
+
+    cout_lock.lock();
+    cout << "window size decreased: " << window_size << endl;
+    cout_lock.unlock();
+}
+
+void increase_window() {
+    window_lock.lock();
+    window_size += BUFFER_SIZE;
+    window_size = min(window_size, FILE_BUFFER_SIZE);
+    window_lock.unlock();
+
+    cout_lock.lock();
+    cout << "window size increased: " << window_size << endl;
+    cout_lock.unlock();
+}
 
 void send_packet(udp_util::udpsocket* sock, int seqno, int len) {
     packet pckt;
@@ -218,8 +248,8 @@ void send_packet(udp_util::udpsocket* sock, int seqno, int len) {
         cout << pckt.seqno << " is sent with " << sent << " bytes" << endl;
         cout_lock.unlock();
 
-        time_t time_now;
-        time(&time_now);
+        timeval time_now;
+        gettimeofday(&time_now, NULL);
         for (int i = 0; i < len; ++i) {
             time_sent[pbase + i] = time_now;
         }
@@ -230,12 +260,16 @@ void ack_listener_thread(udp_util::udpsocket* sock, const long time_out) {
     while(!g_finished) {
         ack_packet ack;
         if (udp_util::recvtimed(sock, &ack, sizeof(ack), time_out) == sizeof(ack)) {
+            ack_lock.lock();
             int pbase = ack.ackno - first_byte_seqno;
             int pfin = max(0, pbase + ack.len);
             pbase = max(0, pbase);
-            ack_lock.lock();
             memset(acked + pbase, 1, pfin - pbase);
             ack_lock.unlock();
+
+            if (pfin - pbase > 0) {
+                increase_window();
+            }
 
             cout_lock.lock();
             cout << "bytes " << pbase << ":" << pfin << " acked!" << endl;
@@ -255,8 +289,7 @@ int send_file(udp_util::udpsocket* sock, FILE* fd, int file_size) {
 
     int base = 0;
     int buf_size = 0;
-    first_byte_seqno = 0;
-    g_finished = false;
+    reset_global();
     while(!g_finished) {
         /// TODO use circular queue
         // advance window base to next unACKed seq#
@@ -273,12 +306,14 @@ int send_file(udp_util::udpsocket* sock, FILE* fd, int file_size) {
             read_data += buf_size;
         }
 
-        time_t time_now;
-        time(&time_now);
+        timeval time_now;
+        gettimeofday(&time_now, NULL);
         int l = base, r = base;
         ack_lock.lock();
         for (; r-base<window_size && r<buf_size; r++) {
-            if (acked[r] || time_now-time_sent[r] < TIME_OUT || r-l == BUFFER_SIZE) {
+            cout << "l=" << l << ": r=" << r << endl;
+            cout << "acked[r]=" << acked[r] << "time_now-time_sent[r]=" << time_now.tv_usec-time_sent[r].tv_usec << endl;
+            if (acked[r] || time_now.tv_usec-time_sent[r].tv_usec < TIME_OUT || r-l == BUFFER_SIZE) {
                 if (l < r) {
                     send_packet(sock, l+first_byte_seqno, r-l);
                 }
@@ -289,6 +324,7 @@ int send_file(udp_util::udpsocket* sock, FILE* fd, int file_size) {
         if (l < r) {
             send_packet(sock, l+first_byte_seqno, r-l);
         }
+        cout << ">>l=" << l << ": r=" << r << endl;
         g_finished = (base == buf_size);
     }
     return file_size;
@@ -334,7 +370,7 @@ int main()
 {
     udp_util::udpsocket sock = udp_util::create_socket(55555);
     /* set PLP and random seed */
-    udp_util::randrop(0.1);
+    udp_util::randrop(0.0);
 
     while(true) {
 		/* Block until receiving a request from a client */

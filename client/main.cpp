@@ -141,7 +141,7 @@ int main()
 
 	char *filename = "test.png";
     int filesize = 0;
-    const long TIME_OUT = 400000;
+    const long TIME_OUT = 999999;
 
 	for(int i = 0; i < MAX_RETRY; ++i) {
         if (sendto(sock.fd, filename, strlen(filename), 0,
