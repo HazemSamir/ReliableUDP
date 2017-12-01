@@ -9,7 +9,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <sys/types.h>
-#include <vector>
+#include <set>
+#include <map>
 #include <sys/time.h>
 #include <atomic>
 #include <mutex>
@@ -186,66 +187,75 @@ namespace selective_repeat {
 
 const long TIME_OUT = 500000; // 0.5 sec
 
-enum PacketStatus {
-    NOT_ACKED,
-    ACKED,
-    THREAD_FINISHED
-};
-
 mutex cout_lock;
-mutex status_lock;
-vector<packet> pckts;
-vector<PacketStatus> status;
+mutex status_lock, pckts_lock;
+set<int> not_acked;
+map<int, packet> pckts;
 /// TODO test with window = 1
 const int window_size = 20;
-// atomic<int> g_seqno;
 atomic<bool> g_finished;
 
-void pckt_thread_handle(udp_util::udpsocket* sock, const int id, const long time_out) {
-    int sent;
-    int pckt_size = PCKT_HEADER_SIZE + pckts[id].len;
+bool acked(int seqno) {
+    status_lock.lock();
+    bool ret = (not_acked.find(seqno) == not_acked.end());
+    status_lock.unlock();
+    return ret;
+}
+
+void set_not_acked(int seqno) {
+    status_lock.lock();
+    not_acked.insert(seqno);
+    status_lock.unlock();
+}
+
+void set_acked(int seqno) {
+    status_lock.lock();
+    not_acked.erase(seqno);
+    status_lock.unlock();
+}
+
+void pckt_thread_handle(udp_util::udpsocket* sock, int seqno, const long time_out) {
+    pckts_lock.lock();
+    packet &pckt = pckts[seqno];
+    pckts_lock.unlock();
+
+    int pckt_size = PCKT_HEADER_SIZE + pckt.len;
 
     while(true) {
+        int sent;
         if (udp_util::randrop()) {
             cout_lock.lock();
-            cout << pckts[id].seqno << "/" << id << " is dropped" << endl;
+            cout << pckt.seqno << " is dropped" << endl;
             cout_lock.unlock();
         } else {
-            if ((sent = udp_util::send(sock, &pckts[id], pckt_size)) == -1) {
+            if ((sent = udp_util::send(sock, &pckt, pckt_size)) == -1) {
                 perror("server: error sending pckt!");
                 exit(-1);
             }
             cout_lock.lock();
-            cout << pckts[id].seqno << "/" << id << " is sent with " << sent << " bytes" << endl;
+            cout << pckt.seqno << " is sent with " << sent << " bytes" << endl;
             cout_lock.unlock();
         }
 
         usleep(time_out);
 
-        status_lock.lock();
-        if (status[id] == ACKED) {
-            status[id] = THREAD_FINISHED;
-            status_lock.unlock();
+        if(acked(seqno)) {
             break;
         }
-        status_lock.unlock();
     }
+    pckts_lock.lock();
+    pckts.erase(seqno);
+    pckts_lock.unlock();
 }
 
 void ack_listener_thread(udp_util::udpsocket* sock, const long time_out) {
     while(!g_finished) {
         ack_packet ack;
         if (udp_util::recvtimed(sock, &ack, sizeof(ack), time_out) == sizeof(ack)) {
-            int pckt_id = ack.ackno;
-            if (pckt_id >= 0) {
-                status_lock.lock();
-                status[pckt_id] = ACKED;
-                status_lock.unlock();
-
-                cout_lock.lock();
-                cout << "packet " << ack.ackno << "/" << pckt_id << " acked!" << endl;
-                cout_lock.unlock();
-            }
+            set_acked(ack.ackno);
+            cout_lock.lock();
+            cout << "packet " << ack.ackno << " acked!" << endl;
+            cout_lock.unlock();
         }
     }
 }
@@ -267,38 +277,30 @@ int send_file(udp_util::udpsocket* sock, FILE* fd) {
     while(!g_finished) {
         /// TODO use circular queue
         // advance window base to next unACKed seq#
-        for (; base < pckts.size(); ++base) {
-            status_lock.lock();
-            if (status[base] != THREAD_FINISHED) {
-                status_lock.unlock();
-                break;
-            }
-            status_lock.unlock();
-        }
+        for (; base < g_seqno && acked(base); ++base);
 
-        for (; pckts.size() - base < window_size && !finished_file;) {
-            status_lock.lock();
-            status.push_back(NOT_ACKED);
-            status_lock.unlock();
+        for (; g_seqno - base < window_size && !finished_file; ++g_seqno) {
+            pckts_lock.lock();
+            packet& pckt = pckts[g_seqno];
+            pckts_lock.unlock();
 
-            pckts.emplace_back();
-            int id = pckts.size() - 1;
-
-            pckts[id].cksum = 1;
-            pckts[id].len = 0;
+            pckt.seqno = g_seqno;
+            pckt.cksum = 1;
+            pckt.len = 0;
             finished_file = true;
             if (read_data < file_size) {
-                pckts[id].len = fread(pckts[id].data, 1, BUFFER_SIZE, fd);
+                pckt.len = fread(pckt.data, 1, BUFFER_SIZE, fd);
                 finished_file = false;
             }
-            pckts[id].seqno = g_seqno++;
 
-            thread th(pckt_thread_handle, sock, id, 100000);
+            set_not_acked(pckt.seqno);
+
+            thread th(pckt_thread_handle, sock, pckt.seqno, 100000);
             th.detach();
 
-            read_data += pckts[id].len;
+            read_data += pckt.len;
         }
-        g_finished = (base == pckts.size());
+        g_finished = pckts.empty();
     }
     return file_size;
 }
