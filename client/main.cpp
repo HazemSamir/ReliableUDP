@@ -139,7 +139,7 @@ int main()
 	server_addr.sin_family = AF_INET;
 	server_addr.sin_port = htons(55555);
 
-	char *filename = "test.png";
+	char *filename = "test.jpg";
     int filesize = 0;
     const long TIME_OUT = 999999;
 
@@ -163,14 +163,15 @@ int main()
         cout << "client: received ACK from server - filesize=" << filesize << endl;
         break;
 	}
-
+/*
+	// Stop and wait
     packet curr_pckt;
     ofstream of;
     of.open(filename);
     int curr_pckt_no = 0;
 
     while(curr_pckt_no < filesize) {
-        /* Block until receiving packet from the server */
+        // Block until receiving packet from the server
         cout << "client: waiting to receive..." << endl;
         char buf[BUFFER_SIZE];
         int recv_bytes = 0;
@@ -196,5 +197,66 @@ int main()
         }
     }
     of.close();
+*/
+
+    // Selective repeat
+    FILE* fd = fopen(filename, "w");
+
+    fseek(fd, filesize - 1, SEEK_SET);
+    fputc('\0', fd);
+
+    int window_size = 20*BUFFER_SIZE;
+    packet curr_pckt;
+    int curr_pckt_no = 0;
+    bool receive_status[filesize];
+    unsigned long bytes_count = 0;
+
+    while(bytes_count < filesize) {
+        // Block until receiving packet from the server
+        cout << "client: waiting to receive..." << endl;
+        char buf[BUFFER_SIZE];
+        int recv_bytes = 0;
+        if ((recv_bytes = udp_util::recvtimed(sock.fd, buf, BUFFER_SIZE - 1, &server_addr, &server_addr_len, TIME_OUT)) < 0) {
+            perror("client: recvfrom failed");
+            break;
+        }
+        curr_pckt = *(packet*) buf;
+        cout << "expected packet: " << curr_pckt_no << endl;
+        cout << "received packet: " << curr_pckt.seqno << endl;
+        cout << "client: received " << recv_bytes << " bytes" << endl;
+        cout << "client: data.len = " << curr_pckt.len << " bytes" << endl;
+
+        if (curr_pckt.seqno >= curr_pckt_no && curr_pckt.seqno <= curr_pckt_no + window_size) {
+            fseek(fd, curr_pckt.seqno, SEEK_SET);
+            fwrite(curr_pckt.data, recv_bytes-8, 1, fd);
+
+            for (int i = curr_pckt.seqno; i < (curr_pckt.seqno + curr_pckt.len); i++) {
+                receive_status[i] = true;
+                bytes_count++;
+            }
+
+            if (curr_pckt.seqno == curr_pckt_no) {
+                while(receive_status[curr_pckt_no]) {
+                    curr_pckt_no++;
+                }
+            }
+
+            send_ack(curr_pckt.seqno, recv_bytes-8, sock.fd, &server_addr);
+        }
+        else if (curr_pckt.seqno < curr_pckt_no) {
+            send_ack(curr_pckt.seqno, recv_bytes-8, sock.fd, &server_addr);
+        }
+    }
+
+    int i = 0;
+    for (int j = 0; j < sizeof(receive_status); j++) {
+        if (!receive_status[j]) i++;
+    }
+    cout << "Falses: " << i << endl;
+    cout << "Bytes count: " << bytes_count << endl;
+    cout << "File size: " << filesize << endl;
+
+    fclose(fd);
+
     return 0;
 }

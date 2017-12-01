@@ -236,7 +236,7 @@ void send_packet(udp_util::udpsocket* sock, int seqno, int len) {
     int pckt_size = PCKT_HEADER_SIZE + pckt.len;
     if (udp_util::randrop()) {
         cout_lock.lock();
-        cout << pckt.seqno << " is dropped ***************************************" << endl;
+        cout << pckt.seqno << " is dropped" << endl;
         cout_lock.unlock();
     } else {
         int sent;
@@ -379,7 +379,7 @@ int main()
 {
     udp_util::udpsocket sock = udp_util::create_socket(55555);
     /* set PLP and random seed */
-    udp_util::randrop(0.2);
+    udp_util::randrop(0.01);
 
     while(true) {
 		/* Block until receiving a request from a client */
