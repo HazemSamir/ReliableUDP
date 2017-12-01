@@ -118,7 +118,8 @@ int main()
             perror("client: recvfrom failed");
         }
         curr_pckt = *(packet*) buf;
-        cout << "packet: " << curr_pckt_no << endl;
+        cout << "expected packet: " << curr_pckt_no << endl;
+        cout << "received packet: " << curr_pckt.seqno << endl;
         cout << "client: received " << recv_bytes << " bytes" << endl;
         cout << "client: data.len = " << curr_pckt.len << " bytes" << endl;
         if (curr_pckt.seqno == curr_pckt_no) {
@@ -127,9 +128,9 @@ int main()
         }
         if (curr_pckt.seqno <= curr_pckt_no) {
             send_ack(curr_pckt.seqno, sockfd, &server_addr);
-        }
-        if (curr_pckt.len == 0) {
-            break;
+            if (curr_pckt.len == 0) {
+                break;
+            }
         }
     }
     of.close();
