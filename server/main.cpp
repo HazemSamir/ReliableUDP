@@ -253,12 +253,10 @@ int send_file(udp_util::udpsocket* sock, FILE* fd, int file_size) {
         ack_listener.detach();
     }
 
-    int g_seqno = 0;
     int base = 0;
     int buf_size = 0;
-    bool finished_file = false;
-    memset(acked, 0, sizeof acked);
-    memset(time_sent, 0, sizeof time_sent);
+    first_byte_seqno = 0;
+    g_finished = false;
     while(!g_finished) {
         /// TODO use circular queue
         // advance window base to next unACKed seq#
@@ -280,7 +278,7 @@ int send_file(udp_util::udpsocket* sock, FILE* fd, int file_size) {
         int l = base, r = base;
         ack_lock.lock();
         for (; r-base<window_size && r<buf_size; r++) {
-            if (acked[r] || time_now-time_sent[r] < TIME_OUT) {
+            if (acked[r] || time_now-time_sent[r] < TIME_OUT || r-l == BUFFER_SIZE) {
                 if (l < r) {
                     send_packet(sock, l+first_byte_seqno, r-l);
                 }
@@ -343,6 +341,7 @@ int main()
 		cout << "Server is waiting to receive..." << endl;
 		char buf[BUFFER_SIZE];
 		int recv_bytes = 0;
+		udp_util::reset_socket_timeout(sock.fd);
 		if ((recv_bytes = recvfrom(sock.fd, buf, BUFFER_SIZE - 1, 0, (sockaddr*) &sock.client_addr,
 				&sock.client_addr_len)) < 0) {
 			perror("server: main recvfrom failed");
@@ -351,7 +350,7 @@ int main()
 		buf[recv_bytes] = '\0';
 		cout << "server: received buffer: " << buf << endl;
 
-		send_file(buf, &sock);
+		cout << "Sent " << send_file(buf, &sock) << endl;
     }
     cout << "Finished" << endl;
     return 0;
