@@ -180,7 +180,7 @@ int send_file(udp_util::udpsocket* sock, FILE* fd, int file_size) {
 } // namespace stop_and_wait
 
 namespace selective_repeat {
-const long TIME_OUT = 500000; // 0.5 sec
+const unsigned long long TIME_OUT = 500000; // 0.5 sec
 
 mutex cout_lock;
 mutex ack_lock;
@@ -236,7 +236,7 @@ void send_packet(udp_util::udpsocket* sock, int seqno, int len) {
     int pckt_size = PCKT_HEADER_SIZE + pckt.len;
     if (udp_util::randrop()) {
         cout_lock.lock();
-        cout << pckt.seqno << " is dropped" << endl;
+        cout << pckt.seqno << " is dropped ***************************************" << endl;
         cout_lock.unlock();
     } else {
         int sent;
@@ -276,6 +276,9 @@ void ack_listener_thread(udp_util::udpsocket* sock, const long time_out) {
             cout << "AKA bytes " << ack.ackno << "+" << ack.len << " acked!" << endl;
             cout_lock.unlock();
         }
+        else {
+            decrease_window();
+        }
     }
 }
 
@@ -311,20 +314,26 @@ int send_file(udp_util::udpsocket* sock, FILE* fd, int file_size) {
         int l = base, r = base;
         ack_lock.lock();
         for (; r-base<window_size && r<buf_size; r++) {
-            cout << "l=" << l << ": r=" << r << endl;
-            cout << "acked[r]=" << acked[r] << "time_now-time_sent[r]=" << time_now.tv_usec-time_sent[r].tv_usec << endl;
-            if (acked[r] || time_now.tv_usec-time_sent[r].tv_usec < TIME_OUT || r-l == BUFFER_SIZE) {
+            //cout << "l=" << l << ": r=" << r << endl;
+            unsigned long long time_now_micro = time_now.tv_sec * 1000000 + time_now.tv_usec;
+            unsigned long long time_sent_micro = time_sent[r].tv_sec * 1000000 + time_sent[r].tv_usec;
+            unsigned long long remaining_time = time_now_micro - time_sent_micro;
+            //cout << "acked[r]=" << acked[r] << "time_now-time_sent[r]=" << remaining_time << endl;
+            if (acked[r] || remaining_time < TIME_OUT || r-l == BUFFER_SIZE) {
                 if (l < r) {
                     send_packet(sock, l+first_byte_seqno, r-l);
                 }
                 l = r + 1;
             }
+            /*else if (remaining_time >= TIME_OUT) {
+                decrease_window();
+            }*/
         }
         ack_lock.unlock();
         if (l < r) {
             send_packet(sock, l+first_byte_seqno, r-l);
         }
-        cout << ">>l=" << l << ": r=" << r << endl;
+        //cout << ">>l=" << l << ": r=" << r << endl;
         g_finished = (base == buf_size);
     }
     return file_size;
@@ -370,7 +379,7 @@ int main()
 {
     udp_util::udpsocket sock = udp_util::create_socket(55555);
     /* set PLP and random seed */
-    udp_util::randrop(0.0);
+    udp_util::randrop(0.2);
 
     while(true) {
 		/* Block until receiving a request from a client */
