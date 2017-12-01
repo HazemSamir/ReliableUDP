@@ -19,6 +19,7 @@
 #include <thread>
 
 #define BUFFER_SIZE 200
+#define FILE_BUFFER_SIZE 10000
 #define PCKT_HEADER_SIZE 8
 
 #define STOP_AND_WAIT false
@@ -136,6 +137,7 @@ bool recv_ack(const int seqno, udp_util::udpsocket* sock, const long time_out=TI
         perror("server: recvfrom - ack failed");
         return false;
     }
+    cout << "ack.no=" << ack.ackno << endl;
     return ack.ackno == seqno;
 }
 
@@ -145,6 +147,7 @@ int sw_sendto(udp_util::udpsocket* sock, const packet* pckt) {
 
     do {
         if (udp_util::randrop()) {
+            sent = 0;
             cout << pckt->seqno << "- dropped" << endl;
         } else {
             if ((sent = udp_util::send(sock, pckt, pckt_size)) == -1) {
@@ -154,28 +157,21 @@ int sw_sendto(udp_util::udpsocket* sock, const packet* pckt) {
             cout << pckt->seqno << "- sent " << sent << " bytes" << endl;
         }
     } while(!recv_ack(pckt->seqno, sock));
-    return sent;
+    cout << "pckt.seqno=" << pckt->seqno << " Acked" << endl;
+    return sent - PCKT_HEADER_SIZE;
 }
 
-int send_file(udp_util::udpsocket* sock, FILE* fd) {
-    long file_size = find_file_size(fd);
+int send_file(udp_util::udpsocket* sock, FILE* fd, int file_size) {
     packet curr_pckt;
     curr_pckt.seqno = 0;
 
-    cout << "file_size: " << file_size << " bytes" << endl;
-
-    int sent = 0;
-    for (long sent_bytes = 0; sent_bytes < file_size; sent_bytes+=curr_pckt.len, curr_pckt.seqno++) {
+    for (int tot_bytes=0, sent=0; tot_bytes < file_size; tot_bytes+=sent) {
         curr_pckt.cksum = 1;
 		curr_pckt.len = fread(curr_pckt.data, 1, BUFFER_SIZE, fd);
-        if ((sent = sw_sendto(sock, &curr_pckt) < 0)) {
+        curr_pckt.seqno = tot_bytes;
+        if ((sent = sw_sendto(sock, &curr_pckt)) < 0) {
             return sent;
         }
-    }
-
-    curr_pckt.len = 0;
-    if ((sent = sw_sendto(sock, &curr_pckt) < 0)) {
-        return sent;
     }
 
     return file_size;
@@ -188,83 +184,69 @@ namespace selective_repeat {
 const long TIME_OUT = 500000; // 0.5 sec
 
 mutex cout_lock;
-mutex status_lock, pckts_lock;
-set<int> not_acked;
-map<int, packet> pckts;
+mutex ack_lock;
+bool acked[FILE_BUFFER_SIZE];
+time_t time_sent[FILE_BUFFER_SIZE];
+char file_data[FILE_BUFFER_SIZE];
+int first_byte_seqno;
+
 /// TODO test with window = 1
-const int window_size = 20;
+const int window_size = 100;
 atomic<bool> g_finished;
 
-bool acked(int seqno) {
-    status_lock.lock();
-    bool ret = (not_acked.find(seqno) == not_acked.end());
-    status_lock.unlock();
-    return ret;
-}
+void send_packet(udp_util::udpsocket* sock, int seqno, int len) {
+    packet pckt;
+    pckt.seqno = seqno;
+    pckt.len = len;
+    pckt.cksum = 1;
 
-void set_not_acked(int seqno) {
-    status_lock.lock();
-    not_acked.insert(seqno);
-    status_lock.unlock();
-}
-
-void set_acked(int seqno) {
-    status_lock.lock();
-    not_acked.erase(seqno);
-    status_lock.unlock();
-}
-
-void pckt_thread_handle(udp_util::udpsocket* sock, int seqno, const long time_out) {
-    pckts_lock.lock();
-    packet &pckt = pckts[seqno];
-    pckts_lock.unlock();
+    int pbase = seqno - first_byte_seqno;
+    memcpy(pckt.data, file_data + pbase, len);
 
     int pckt_size = PCKT_HEADER_SIZE + pckt.len;
-
-    while(true) {
+    if (udp_util::randrop()) {
+        cout_lock.lock();
+        cout << pckt.seqno << " is dropped" << endl;
+        cout_lock.unlock();
+    } else {
         int sent;
-        if (udp_util::randrop()) {
-            cout_lock.lock();
-            cout << pckt.seqno << " is dropped" << endl;
-            cout_lock.unlock();
-        } else {
-            if ((sent = udp_util::send(sock, &pckt, pckt_size)) == -1) {
-                perror("server: error sending pckt!");
-                exit(-1);
-            }
-            cout_lock.lock();
-            cout << pckt.seqno << " is sent with " << sent << " bytes" << endl;
-            cout_lock.unlock();
+        if ((sent = udp_util::send(sock, &pckt, pckt_size)) == -1) {
+            perror("server: error sending pckt!");
+            exit(-1);
         }
+        cout_lock.lock();
+        cout << pckt.seqno << " is sent with " << sent << " bytes" << endl;
+        cout_lock.unlock();
 
-        usleep(time_out);
-
-        if(acked(seqno)) {
-            break;
+        time_t time_now;
+        time(&time_now);
+        for (int i = 0; i < len; ++i) {
+            time_sent[pbase + i] = time_now;
         }
     }
-    pckts_lock.lock();
-    pckts.erase(seqno);
-    pckts_lock.unlock();
 }
 
 void ack_listener_thread(udp_util::udpsocket* sock, const long time_out) {
     while(!g_finished) {
         ack_packet ack;
         if (udp_util::recvtimed(sock, &ack, sizeof(ack), time_out) == sizeof(ack)) {
-            set_acked(ack.ackno);
+            int pbase = ack.ackno - first_byte_seqno;
+            int pfin = max(0, pbase + ack.len);
+            pbase = max(0, pbase);
+            ack_lock.lock();
+            memset(acked + pbase, 1, pfin - pbase);
+            ack_lock.unlock();
+
             cout_lock.lock();
-            cout << "packet " << ack.ackno << " acked!" << endl;
+            cout << "bytes " << pbase << ":" << pfin << " acked!" << endl;
+            cout << "AKA bytes " << ack.ackno << "+" << ack.len << " acked!" << endl;
             cout_lock.unlock();
         }
     }
 }
 
-int send_file(udp_util::udpsocket* sock, FILE* fd) {
-    long file_size = find_file_size(fd);
+int send_file(udp_util::udpsocket* sock, FILE* fd, int file_size) {
     long read_data = 0;
-    cout << "file_size: " << file_size << " bytes" << endl;
-
     {
         /* Launch a listener thread for ACKs */
         thread ack_listener(ack_listener_thread, sock, TIME_OUT);
@@ -273,63 +255,52 @@ int send_file(udp_util::udpsocket* sock, FILE* fd) {
 
     int g_seqno = 0;
     int base = 0;
+    int buf_size = 0;
     bool finished_file = false;
+    memset(acked, 0, sizeof acked);
+    memset(time_sent, 0, sizeof time_sent);
     while(!g_finished) {
         /// TODO use circular queue
         // advance window base to next unACKed seq#
-        for (; base < g_seqno && acked(base); ++base);
+        ack_lock.lock();
+        for (; base < buf_size && acked[base]; ++base);
+        ack_lock.unlock();
 
-        for (; g_seqno - base < window_size && !finished_file; ++g_seqno) {
-            pckts_lock.lock();
-            packet& pckt = pckts[g_seqno];
-            pckts_lock.unlock();
-
-            pckt.seqno = g_seqno;
-            pckt.cksum = 1;
-            pckt.len = 0;
-            finished_file = true;
-            if (read_data < file_size) {
-                pckt.len = fread(pckt.data, 1, BUFFER_SIZE, fd);
-                finished_file = false;
-            }
-
-            set_not_acked(pckt.seqno);
-
-            thread th(pckt_thread_handle, sock, pckt.seqno, 100000);
-            th.detach();
-
-            read_data += pckt.len;
+        if (base == buf_size) {
+            first_byte_seqno += buf_size;
+            buf_size = fread(file_data, 1, FILE_BUFFER_SIZE, fd);
+            memset(acked, 0, buf_size);
+            memset(time_sent, 0, sizeof time_sent);
+            base = 0;
+            read_data += buf_size;
         }
-        g_finished = pckts.empty();
+
+        time_t time_now;
+        time(&time_now);
+        int l = base, r = base;
+        ack_lock.lock();
+        for (; r-base<window_size && r<buf_size; r++) {
+            if (acked[r] || time_now-time_sent[r] < TIME_OUT) {
+                if (l < r) {
+                    send_packet(sock, l+first_byte_seqno, r-l);
+                }
+                l = r + 1;
+            }
+        }
+        ack_lock.unlock();
+        if (l < r) {
+            send_packet(sock, l+first_byte_seqno, r-l);
+        }
+        g_finished = (base == buf_size);
     }
     return file_size;
 }
 
 } // namespace selective_repeat
 
-/// Return number of bytes sent or -1 if error happened
-int send_file(const char* file_name, udp_util::udpsocket* sock) {
-    FILE* fd = fopen(file_name, "r");
-    if (fd == NULL) {
-        perror("server: File NOT FOUND 404");
-		return -1;
-    }
-
-    cout << "server: opened file: \"" << file_name << "\"" << endl;
-
-    int sent = -1;
-    if (STOP_AND_WAIT) {
-        sent = stop_and_wait::send_file(sock, fd);
-    } else {
-        sent = selective_repeat::send_file(sock, fd);
-    }
-    fclose(fd);
-    return sent;
-}
-
-void send_first_ack(udp_util::udpsocket* sock) {
+void send_first_ack(udp_util::udpsocket* sock, int filesize) {
     ack_packet ack;
-    ack.ackno = -1;
+    ack.ackno = filesize;
 
     if (udp_util::send(sock, &ack, sizeof(ack)) == -1) {
         perror("server: error sending first ACK pckt!");
@@ -337,11 +308,35 @@ void send_first_ack(udp_util::udpsocket* sock) {
     }
 }
 
+/// Return number of bytes sent or -1 if error happened
+int send_file(const char* file_name, udp_util::udpsocket* sock) {
+    FILE* fd = fopen(file_name, "r");
+    if (fd == NULL) {
+        perror("server: File NOT FOUND 404");
+        send_first_ack(sock, -1);
+		return -1;
+    }
+    int file_size = find_file_size(fd);
+
+    cout << "server: opened file: \"" << file_name << "\"" << endl;
+    cout << "file_size: " << file_size << " bytes" << endl;
+
+    send_first_ack(sock, file_size);
+    int sent = -1;
+    if (STOP_AND_WAIT) {
+        sent = stop_and_wait::send_file(sock, fd, file_size);
+    } else {
+        sent = selective_repeat::send_file(sock, fd, file_size);
+    }
+    fclose(fd);
+    return sent;
+}
+
 int main()
 {
-    udp_util::udpsocket sock = udp_util::create_socket(8080);
+    udp_util::udpsocket sock = udp_util::create_socket(55555);
     /* set PLP and random seed */
-    udp_util::randrop(0.0);
+    udp_util::randrop(0.1);
 
     while(true) {
 		/* Block until receiving a request from a client */
@@ -356,8 +351,8 @@ int main()
 		buf[recv_bytes] = '\0';
 		cout << "server: received buffer: " << buf << endl;
 
-		send_first_ack(&sock);
 		send_file(buf, &sock);
     }
+    cout << "Finished" << endl;
     return 0;
 }
