@@ -78,69 +78,6 @@ int receive_file(udp_util::udpsocket* sock, udp_util::addr* s_addr, const char* 
 } // namespace stop_and_wait
 
 namespace selective_repeat {
-int receive_file(udp_util::udpsocket* sock, udp_util::addr* s_addr, const char* filename, const int filesize) {
-    FILE* fd = fopen(filename, "w");
-
-    fseek(fd, filesize - 1, SEEK_SET);
-    fputc('\0', fd);
-
-    int window_size = 20 * BUFFER_SIZE;
-    packet curr_pckt;
-    int curr_pckt_no = 0;
-    bool receive_status[filesize];
-    unsigned long bytes_count = 0;
-
-    while(bytes_count < filesize) {
-        // Block until receiving packet from the server
-        cout << "client: waiting to receive..." << endl;
-        char buf[BUFFER_SIZE];
-        int recv_bytes = 0;
-        if ((recv_bytes = udp_util::recvtimed(sock->fd, buf, BUFFER_SIZE - 1, &s_addr->addr, &s_addr->len, TIME_OUT)) < 0) {
-            perror("client: recvfrom failed");
-            break;
-        }
-        curr_pckt = *(packet*) buf;
-        cout << "expected packet: " << curr_pckt_no << endl;
-        cout << "received packet: " << curr_pckt.seqno << endl;
-        cout << "client: received " << recv_bytes << " bytes" << endl;
-        cout << "client: data.len = " << curr_pckt.len << " bytes" << endl;
-
-        if (curr_pckt.seqno >= curr_pckt_no && curr_pckt.seqno <= curr_pckt_no + window_size) {
-            fseek(fd, curr_pckt.seqno, SEEK_SET);
-            fwrite(curr_pckt.data, recv_bytes - 8, 1, fd);
-
-            for (int i = curr_pckt.seqno; i < (curr_pckt.seqno + curr_pckt.len); i++) {
-                receive_status[i] = true;
-                bytes_count++;
-            }
-
-            if (curr_pckt.seqno == curr_pckt_no) {
-                while(receive_status[curr_pckt_no]) {
-                    curr_pckt_no++;
-                }
-            }
-
-            send_ack(curr_pckt.seqno, recv_bytes - 8, sock->fd, &s_addr->addr);
-        } else if (curr_pckt.seqno < curr_pckt_no) {
-            send_ack(curr_pckt.seqno, recv_bytes - 8, sock->fd, &s_addr->addr);
-        }
-    }
-
-    int i = 0;
-    for (int j = 0; j < sizeof(receive_status); j++) {
-        if (!receive_status[j]) i++;
-    }
-    cout << "Falses: " << i << endl;
-    cout << "Bytes count: " << bytes_count << endl;
-    cout << "File size: " << filesize << endl;
-
-    fclose(fd);
-
-    return curr_pckt_no;
-}
-} // namespace selective_repeat
-
-namespace selective_repeat2 {
 
 const unsigned long long TIME_OUT = 500000; // 0.5 sec
 
@@ -272,7 +209,7 @@ int main() {
     if (STOP_AND_WAIT) {
         stop_and_wait::receive_file(&sock, &server_addr, full_path, filesize);
     } else {
-        selective_repeat2::receive_file(&sock, &server_addr, full_path, filesize);
+        selective_repeat::receive_file(&sock, &server_addr, full_path, filesize);
     }
 
     return 0;

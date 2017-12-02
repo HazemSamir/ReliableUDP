@@ -205,11 +205,11 @@ void ack_listener_thread(udp_util::udpsocket* sock, window *w, const long time_o
 int send_file(udp_util::udpsocket* sock, FILE* fd, int file_size) {
     long read_data = 0;
     window w;
-    {
+
         /* Launch a listener thread for ACKs */
         thread ack_listener(ack_listener_thread, sock, &w, TIME_OUT);
-        ack_listener.detach();
-    }
+        // ack_listener.detach();
+
 
     int base = 0;
     int buf_size = 0;
@@ -260,6 +260,7 @@ int send_file(udp_util::udpsocket* sock, FILE* fd, int file_size) {
         }
         g_finished = (base == buf_size);
     }
+    ack_listener.join();
     return file_size;
 }
 
