@@ -3,4 +3,3 @@ obj/**
 *.o
 *.depend
 *.layout
-client_root/**
