@@ -206,10 +206,8 @@ int send_file(udp_util::udpsocket* sock, FILE* fd, int file_size) {
     long read_data = 0;
     window w;
 
-        /* Launch a listener thread for ACKs */
-        thread ack_listener(ack_listener_thread, sock, &w, TIME_OUT);
-        // ack_listener.detach();
-
+    /* Launch a listener thread for ACKs */
+    thread ack_listener(ack_listener_thread, sock, &w, TIME_OUT);
 
     int base = 0;
     int buf_size = 0;
