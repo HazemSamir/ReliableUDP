@@ -35,13 +35,6 @@ struct ack_packet {
     uint32_t ackno;
 };
 
-long find_file_size(FILE* fd) {
-    fseek(fd, 0L, SEEK_END);
-    long size = ftell(fd);
-    fseek(fd, 0L, SEEK_SET);
-    return size;
-}
-
 namespace stop_and_wait {
 
 const long TIME_OUT = 100000; // 0.1 sec
@@ -232,7 +225,7 @@ int send_file(udp_util::udpsocket* sock, FILE* fd, int file_size) {
         gettimeofday(&time_now, NULL);
         unsigned long long time_now_micro = time_now.tv_sec * 1000000 + time_now.tv_usec;
 
-        vector<pair<int,int>> pckts_to_be_sent;
+        vector<pair<int, int>> pckts_to_be_sent;
         int l = base, r = base;
 
         w.lock();
