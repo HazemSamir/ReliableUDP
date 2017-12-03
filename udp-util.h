@@ -5,25 +5,19 @@
 
 namespace udp_util {
 
-struct addr {
-    sockaddr_in addr;
-    socklen_t len = sizeof(addr);
-};
-
 struct udpsocket {
     int fd;
-    addr myaddr;
+    sockaddr_in toaddr;
+    socklen_t addr_len = sizeof(toaddr);
 };
 
 bool randrop(double plp = 0.0, double seed = -1.0);
 
-udpsocket create_socket(const int port);
+udpsocket create_socket(const int port, const int toport=0, const int toip=INADDR_ANY);
 
 void set_socket_timeout(const int sockfd, const long timeout);
 
 void reset_socket_timeout(const int sockfd);
-
-int recvtimed(int fd, void* buf, const int bufsize, sockaddr_in* addr, socklen_t* addr_len, const long t);
 
 int recvtimed(udpsocket* s, void* buf, const int bufsize, const long t);
 

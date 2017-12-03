@@ -22,20 +22,29 @@ bool randrop(double plp, double seed) {
     return rand_idx;
 }
 
-udpsocket create_socket(const int port) {
+udpsocket create_socket(const int port, const int toport, const int toip) {
     udpsocket s;
     if ((s.fd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0) {
         perror("cannot create socket");
         exit(1);
     }
 
-    memset((char*) &s.myaddr.addr, 0, sizeof(s.myaddr.addr));
-    s.myaddr.addr.sin_family = AF_INET;
-    s.myaddr.addr.sin_port = htons(port);
-    s.myaddr.addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    memset((char*) &s.toaddr, 0, sizeof(s.toaddr));
+    s.toaddr.sin_family = AF_INET;
+    s.toaddr.sin_port = htons(toport);
+    s.toaddr.sin_addr.s_addr = htonl(toip);
+    s.addr_len = sizeof(s.toaddr);
+
+    sockaddr_in myaddr;
+    socklen_t myaddr_len = sizeof(myaddr);
+    memset((char*) &myaddr, 0, sizeof(myaddr));
+    myaddr.sin_family = AF_INET;
+    myaddr.sin_port = htons(port);
+    myaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    myaddr_len = sizeof(myaddr);
 
     /* bind to the address to which the service will be offered */
-    if (bind(s.fd, (sockaddr *) &s.myaddr.addr, sizeof(s.myaddr.addr)) < 0) {
+    if (bind(s.fd, (sockaddr *) &myaddr, sizeof(myaddr)) < 0) {
         perror("bind failed");
         exit(1);
     }
@@ -63,22 +72,15 @@ void reset_socket_timeout(const int sockfd) {
     }
 }
 
-int recvtimed(int fd, void* buf, const int bufsize, sockaddr_in* addr, socklen_t* addr_len, const long t) {
-    set_socket_timeout(fd, t);
-    int recved = recvfrom(fd, buf, bufsize, 0, (sockaddr*) addr, addr_len);
-    reset_socket_timeout(fd);
-    return recved;
-}
-
 int recvtimed(udpsocket* s, void* buf, const int bufsize, const long t) {
     set_socket_timeout(s->fd, t);
-    int recved = recvfrom(s->fd, buf, bufsize, 0, (sockaddr*) &s->myaddr.addr, &s->myaddr.len);
+    int recved = recvfrom(s->fd, buf, bufsize, 0, (sockaddr*) &s->toaddr, &s->addr_len);
     reset_socket_timeout(s->fd);
     return recved;
 }
 
 int send(udpsocket* s, const void* buf, const int bufsize) {
-    return sendto(s->fd, (void*) buf, bufsize, 0, (sockaddr*) &s->myaddr.addr, sizeof(s->myaddr.addr));
+    return sendto(s->fd, (void*) buf, bufsize, 0, (sockaddr*) &s->toaddr, s->addr_len);
 }
 
 } // socket_util

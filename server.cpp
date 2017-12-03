@@ -267,7 +267,6 @@ int send_file(udp_util::udpsocket* sock, FILE* fd, int file_size) {
 void send_first_ack(udp_util::udpsocket* sock, int filesize) {
     ack_packet ack;
     ack.ackno = filesize;
-
     if (udp_util::send(sock, &ack, sizeof(ack)) == -1) {
         perror("server: error sending first ACK pckt!");
         exit(-1);
@@ -300,7 +299,7 @@ int send_file(const char* file_name, udp_util::udpsocket* sock) {
 }
 
 int main() {
-    udp_util::udpsocket sock = udp_util::create_socket(55555);
+    udp_util::udpsocket sock = udp_util::create_socket(4444);
     /* set PLP and random seed */
     udp_util::randrop(0.0);
 
@@ -310,8 +309,8 @@ int main() {
         char filename[BUFFER_SIZE];
         int recv_bytes = 0;
         udp_util::reset_socket_timeout(sock.fd);
-        if ((recv_bytes = recvfrom(sock.fd, filename, BUFFER_SIZE - 1, 0, (sockaddr*) &sock.myaddr.addr,
-                                   &sock.myaddr.len)) < 0) {
+        if ((recv_bytes = recvfrom(sock.fd, filename, BUFFER_SIZE - 1, 0, (sockaddr*) &sock.toaddr,
+                                   &sock.addr_len)) < 0) {
             perror("server: main recvfrom failed");
             exit(-1);
         }
