@@ -304,8 +304,6 @@ int main() {
     /* set PLP and random seed */
     udp_util::randrop(0.0);
 
-    int a7la_port = 44445;
-
     while(true) {
         /* Block until receiving a request from a client */
         cout << "Server is waiting to receive..." << endl;
@@ -319,11 +317,9 @@ int main() {
         }
         filename[recv_bytes] = '\0';
         cout << "server: received filename: " << filename << endl;
-        a7la_port++;
+
         if (!fork()) {
-            udp_util::udpsocket sock2 = udp_util::create_socket(a7la_port);
-            sock2.toaddr = sock.toaddr;
-            sock2.addr_len = sock.addr_len;
+            udp_util::udpsocket sock2 = udp_util::create_socket(sock.toaddr, sock.addr_len);
 
             char full_path[BUFFER_SIZE] = ROOT;
             strncat(full_path, filename, BUFFER_SIZE - strlen(ROOT));

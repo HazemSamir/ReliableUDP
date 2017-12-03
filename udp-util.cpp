@@ -52,6 +52,20 @@ udpsocket create_socket(const int port, const int toport, const int toip) {
     return s;
 }
 
+udpsocket create_socket(const sockaddr_in toaddr, const socklen_t addr_len) {
+    udpsocket s;
+    if ((s.fd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0) {
+        perror("cannot create socket");
+        exit(1);
+    }
+
+    memset((char*) &s.toaddr, 0, sizeof(s.toaddr));
+    s.toaddr = toaddr;
+    s.addr_len = addr_len;
+
+    return s;
+}
+
 void set_socket_timeout(const int sockfd, const long timeout) {
     struct timeval tv;
     tv.tv_sec = 0;

@@ -15,6 +15,8 @@ bool randrop(double plp = 0.0, double seed = -1.0);
 
 udpsocket create_socket(const int port, const int toport=0, const int toip=INADDR_ANY);
 
+udpsocket create_socket(const sockaddr_in toaddr, const socklen_t addr_len);
+
 void set_socket_timeout(const int sockfd, const long timeout);
 
 void reset_socket_timeout(const int sockfd);
