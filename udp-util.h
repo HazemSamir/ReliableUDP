@@ -1,5 +1,5 @@
-#ifndef UDP-UTIL_H
-#define UDP-UTIL_H
+#ifndef UDP_UTIL_H
+#define UDP_UTIL_H
 
 #include <arpa/inet.h>
 
@@ -31,4 +31,4 @@ int send(udpsocket* s, const void* buf, const int bufsize);
 
 } // socket_util
 
-#endif // UDP-UTIL_H
+#endif // UDP_UTIL_H

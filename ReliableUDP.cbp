@@ -13,7 +13,7 @@
 				<Option compiler="gcc" />
 				<Compiler>
 					<Add option="-O2" />
-					<Add directory="include" />
+					<Add directory="../ReliableUDP" />
 				</Compiler>
 				<Linker>
 					<Add option="-s" />
@@ -28,6 +28,7 @@
 				<Compiler>
 					<Add option="-O2" />
 					<Add directory="include" />
+					<Add directory="../ReliableUDP" />
 				</Compiler>
 				<Linker>
 					<Add option="-s" />
@@ -38,17 +39,24 @@
 			<Add alias="all" targets="server;client;" />
 		</VirtualTargets>
 		<Compiler>
+			<Add option="-O3" />
+			<Add option="-Weffc++" />
+			<Add option="-Wextra" />
 			<Add option="-Wall" />
+			<Add option="-std=c++11" />
 			<Add option="-fexceptions" />
 		</Compiler>
 		<Unit filename="client.cpp">
 			<Option target="client" />
 		</Unit>
+		<Unit filename="file-buffer.cpp" />
+		<Unit filename="file-buffer.h" />
 		<Unit filename="server.cpp">
 			<Option target="server" />
 		</Unit>
 		<Unit filename="udp-util.cpp" />
 		<Unit filename="udp-util.h" />
+		<Unit filename="util.h" />
 		<Extensions>
 			<envvars />
 			<code_completion />

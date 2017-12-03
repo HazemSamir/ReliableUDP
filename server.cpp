@@ -35,11 +35,18 @@ struct ack_packet {
     uint32_t ackno;
 };
 
+uint32_t find_file_size(FILE* fd) {
+    fseek(fd, 0L, SEEK_END);
+    uint32_t size = ftell(fd);
+    fseek(fd, 0L, SEEK_SET);
+    return size;
+}
+
 namespace stop_and_wait {
 
 const long TIME_OUT = 100000; // 0.1 sec
 
-bool recv_ack(const int seqno, udp_util::udpsocket* sock, const long time_out = TIME_OUT) {
+bool recv_ack(const uint32_t seqno, udp_util::udpsocket* sock, const long time_out = TIME_OUT) {
     ack_packet ack;
     int recv_bytes = 0;
     if ((recv_bytes = udp_util::recvtimed(sock, &ack, sizeof(ack), time_out)) != sizeof(ack)) {
