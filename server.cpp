@@ -6,6 +6,7 @@
 #include <sys/time.h>
 #include <thread>
 #include <vector>
+#include <unistd.h>
 
 #include "udp-util.h"
 
@@ -14,7 +15,7 @@
 #define FILE_BUFFER_SIZE 100000
 #define PCKT_HEADER_SIZE 8
 
-#define STOP_AND_WAIT 1
+#define STOP_AND_WAIT 0
 
 using namespace std;
 
@@ -303,6 +304,8 @@ int main() {
     /* set PLP and random seed */
     udp_util::randrop(0.0);
 
+    int a7la_port = 44445;
+
     while(true) {
         /* Block until receiving a request from a client */
         cout << "Server is waiting to receive..." << endl;
@@ -316,10 +319,16 @@ int main() {
         }
         filename[recv_bytes] = '\0';
         cout << "server: received filename: " << filename << endl;
+        a7la_port++;
+        if (!fork()) {
+            udp_util::udpsocket sock2 = udp_util::create_socket(a7la_port);
+            sock2.toaddr = sock.toaddr;
+            sock2.addr_len = sock.addr_len;
 
-        char full_path[BUFFER_SIZE] = ROOT;
-        strncat(full_path, filename, BUFFER_SIZE - strlen(ROOT));
-        cout << "Sent " << send_file(full_path, &sock) << endl;
+            char full_path[BUFFER_SIZE] = ROOT;
+            strncat(full_path, filename, BUFFER_SIZE - strlen(ROOT));
+            cout << "Sent " << send_file(full_path, &sock2) << endl;
+        }
     }
     cout << "Finished" << endl;
     return 0;

@@ -6,7 +6,7 @@
 #include "udp-util.h"
 
 #define ROOT "client_root/"
-#define STOP_AND_WAIT 1
+#define STOP_AND_WAIT 0
 
 #define FILE_BUFFER_SIZE 100000
 #define BUFFER_SIZE 250
@@ -187,18 +187,19 @@ int request_file(udp_util::udpsocket* sock, const char* filename) {
     return filesize;
 }
 
-int main() {
-    udp_util::udpsocket sock = udp_util::create_socket(5555, 4444);
+int main(int argc, char* argv[]) {
+    udp_util::udpsocket sock = udp_util::create_socket(atoi(argv[2]), 4444);
 
-    char *filename = "test.png";
-    int filesize = request_file(&sock, filename);
+    int filesize = request_file(&sock, argv[1]);
 
     if (filesize < 0) {
         return -1;
     }
 
     char full_path[BUFFER_SIZE] = ROOT;
-    strncat(full_path, filename, BUFFER_SIZE - strlen(ROOT));
+    if (argc >= 2) {
+        strncat(full_path, argv[1], BUFFER_SIZE - strlen(ROOT));
+    }
     if (STOP_AND_WAIT) {
         stop_and_wait::receive_file(&sock, full_path, filesize);
     } else {
