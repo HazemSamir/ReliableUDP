@@ -14,7 +14,7 @@
 #define FILE_BUFFER_SIZE 100000
 #define PCKT_HEADER_SIZE 8
 
-#define STOP_AND_WAIT 0
+#define STOP_AND_WAIT 1
 
 using namespace std;
 

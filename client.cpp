@@ -3,12 +3,12 @@
 #include <arpa/inet.h>
 #include <fstream>
 
-#include "file-buffer.h"
 #include "udp-util.h"
 
 #define ROOT "client_root/"
-#define STOP_AND_WAIT 0
+#define STOP_AND_WAIT 1
 
+#define FILE_BUFFER_SIZE 100000
 #define BUFFER_SIZE 250
 #define MAX_RETRY 100
 
@@ -43,16 +43,16 @@ int send_ack(udp_util::udpsocket* sock, const int ackno, const int len) {
 
 namespace stop_and_wait {
 
-uint32_t receive_file(udp_util::udpsocket* sock, const char* filename, const uint32_t filesize) {
+int receive_file(udp_util::udpsocket* sock, const char* filename, const int filesize) {
     packet curr_pckt;
     ofstream of;
     of.open(filename);
-    uint32_t curr_pckt_no = 0;
+    int curr_pckt_no = 0;
 
     while(curr_pckt_no < filesize) {
         // Block until receiving packet from the server
         cout << "client: waiting to receive..." << endl;
-        uint32_t recv_bytes = 0;
+        int recv_bytes = 0;
         if ((recv_bytes = udp_util::recvtimed(sock, &curr_pckt, sizeof(curr_pckt), TIME_OUT)) < 0) {
             perror("client: recvfrom failed");
             break;
@@ -63,11 +63,11 @@ uint32_t receive_file(udp_util::udpsocket* sock, const char* filename, const uin
         cout << "client: data.len = " << curr_pckt.len << " bytes" << endl;
 
         if (curr_pckt.seqno == curr_pckt_no) {
-            of.write(curr_pckt.data, recv_bytes - 8);
-            curr_pckt_no += recv_bytes - 8;
+            of.write(curr_pckt.data, recv_bytes-8);
+            curr_pckt_no += recv_bytes-8;
         }
         if (curr_pckt.seqno <= curr_pckt_no) {
-            send_ack(sock, curr_pckt.seqno, recv_bytes - 8);
+            send_ack(sock, curr_pckt.seqno, recv_bytes-8);
         }
     }
     of.close();
@@ -80,50 +80,89 @@ namespace selective_repeat {
 
 const unsigned long long TIME_OUT = 500000; // 0.5 sec
 
-uint32_t receive_file(udp_util::udpsocket* sock, const char* filename, const uint32_t filesize) {
+int window_size;
+
+void decrease_window() {
+    window_size /= 2;
+    window_size = max(window_size, BUFFER_SIZE);
+}
+
+void increase_window() {
+    window_size += BUFFER_SIZE;
+    window_size = min(window_size, FILE_BUFFER_SIZE);
+}
+
+int receive_file(udp_util::udpsocket* sock, const char* filename, const int filesize) {
     ofstream of;
     of.open(filename);
 
-    uint32_t window_size = 40 * BUFFER_SIZE;
-    Range<uint32_t> window(0, window_size);
-    FileBufferedWriter buf(filename, 200 * BUFFER_SIZE);
+    bool acked[FILE_BUFFER_SIZE];
+    char file_data[FILE_BUFFER_SIZE];
 
-    while(window.start() < filesize) {
+    int buf_base = 0, recvbase = 0;
+    window_size = 5 * BUFFER_SIZE;
+    memset(acked, 0, sizeof(acked));
+    while(recvbase + buf_base < filesize) {
         /// TODO use circular queue
         // advance window base to next unACKed seq#
-        window = Range<uint32_t>(buf.adjust(), window_size);
+        for (; buf_base < FILE_BUFFER_SIZE && acked[buf_base]; ++buf_base);
 
-        packet pckt;
-        if (udp_util::recvtimed(sock, &pckt, sizeof(pckt), TIME_OUT) < 0) {
+        if (buf_base == FILE_BUFFER_SIZE) {
+            of.write(file_data, FILE_BUFFER_SIZE);
+            memset(acked, 0, FILE_BUFFER_SIZE);
+            buf_base = 0;
+            recvbase += FILE_BUFFER_SIZE;
+            cout << "reset!" << endl;
+        }
+
+        packet curr_pckt;
+        if (udp_util::recvtimed(sock, &curr_pckt, sizeof(curr_pckt), TIME_OUT) < 0) {
             perror("client: recvfrom failed");
             break;
         }
-        Range<uint32_t> pckt_range(pckt.seqno, pckt.len);
-        Range<uint32_t> sect = window.intersect(pckt_range);
 
-        cout << "client: received pckt.no=" << pckt.seqno << "+" << pckt.len << endl;
-        cout << "client: expected window=" << window.start() << "+" << window.len() << endl;
-        cout << "client: intersection=" << sect.start() << "+" << sect.len() << endl;
+        int window_start = recvbase + buf_base;
+        int window_len = min(window_size, FILE_BUFFER_SIZE - buf_base);
 
-        if (sect.len() > 0) {
-            Range<uint32_t> written = buf.write(pckt.data, sect);
-            send_ack(sock, pckt.seqno, written.end() - pckt.seqno);
-        } else if (pckt_range.end() <= window.start()) {
-            send_ack(sock, pckt.seqno, pckt.len);
+        int pckt_start = max((int) curr_pckt.seqno, window_start);
+        int pckt_end = curr_pckt.seqno + curr_pckt.len;
+        pckt_end = max(window_start, pckt_end);
+        pckt_end = min(window_start + window_len, pckt_end);
+        pckt_end = min(pckt_start + window_len, pckt_end);
+        int pckt_len = pckt_end - pckt_start;
+        cout << "client: received pckt.no=" << curr_pckt.seqno << "+" << curr_pckt.len << endl;
+        cout << "client: expected window=" << window_start << "+" << window_len << endl;
+        cout << "client: will write " << pckt_start << "+" << pckt_len << endl;
+
+        if (pckt_len > 0) {
+            int start_in_buf = pckt_start - recvbase;
+            int start_in_pckt = pckt_start - curr_pckt.seqno;
+            memcpy(file_data + start_in_buf, curr_pckt.data + start_in_pckt, pckt_len);
+            memset(acked + start_in_buf, 1, pckt_len);
+
+            int ack_start = min((int)curr_pckt.seqno, pckt_start);
+            send_ack(sock, ack_start, pckt_end - ack_start);
+        } else if (curr_pckt.seqno + curr_pckt.len <= recvbase + buf_base) {
+            send_ack(sock, curr_pckt.seqno, curr_pckt.len);
         } else {
-            cout << "client: pckt ignored" << endl;
+            cout << "ignored" << endl;
         }
     }
-    buf.close();
-    return window.start();
+
+    if (buf_base > 0) {
+        of.write(file_data, buf_base);
+        recvbase += buf_base;
+    }
+    of.close();
+    return recvbase;
 }
 
 } // namespace selective_repeat2
 
 /// Keep sending filename to the server till it receives an ACK
 /// Returns filesize received from the server
-uint32_t request_file(udp_util::udpsocket* sock, const char* filename) {
-    uint32_t filesize = 0;
+int request_file(udp_util::udpsocket* sock, const char* filename) {
+    int filesize = 0;
 
     for(int i = 0; i < MAX_RETRY; ++i) {
         if (udp_util::send(sock, filename, strlen(filename)) == -1) {
@@ -133,14 +172,13 @@ uint32_t request_file(udp_util::udpsocket* sock, const char* filename) {
 
         char buf[BUFFER_SIZE];
         int received = udp_util::recvtimed(sock, buf, BUFFER_SIZE, TIME_OUT);
-        if (received <= 0) {
+        if (received < 0) {
             perror("client: timeout to receive filesize: ");
             continue;
         } else if (received != sizeof(ack_packet)) {
             cerr << "Didn't receive right ACK - received " << received << " bytes instead" << endl;
             continue;
         }
-        cout << "Received port: " << ntohs(sock->toaddr.sin_port) << endl;
         filesize = ((ack_packet*) buf)->ackno;
         cout << "client: received ACK from server - filesize=" << filesize << endl;
         break;
@@ -150,9 +188,9 @@ uint32_t request_file(udp_util::udpsocket* sock, const char* filename) {
 }
 
 int main() {
-    udp_util::udpsocket sock = udp_util::create_socket(3333, 55555);
+    udp_util::udpsocket sock = udp_util::create_socket(5555, 4444);
 
-    const char *filename = "test.png";
+    char *filename = "test.png";
     int filesize = request_file(&sock, filename);
 
     if (filesize < 0) {
