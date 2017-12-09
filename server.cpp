@@ -46,7 +46,7 @@ uint32_t find_file_size(FILE* fd) {
 
 namespace stop_and_wait {
 
-const long TIME_OUT = 150000; // 0.15 sec
+const long TIME_OUT = 100000; // 0.1 sec
 
 bool recv_ack(const uint32_t seqno, udp_util::udpsocket* sock, const long time_out = TIME_OUT) {
     ack_packet ack;
@@ -99,7 +99,7 @@ int send_file(udp_util::udpsocket* sock, FILE* fd, int file_size) {
 } // namespace stop_and_wait
 
 namespace selective_repeat {
-const unsigned long long TIME_OUT = 150000;
+const unsigned long long TIME_OUT = 100000;
 
 mutex cout_lock;
 mutex ack_lock;

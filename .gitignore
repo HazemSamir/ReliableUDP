@@ -4,3 +4,6 @@ obj/**
 *.depend
 *.layout
 client_root/**
+!client_root/client_s.in
+!client_root/client_m.in
+!client_root/client_l.in
