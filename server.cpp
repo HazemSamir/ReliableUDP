@@ -1,6 +1,7 @@
 #include <arpa/inet.h>
 #include <atomic>
 #include <iostream>
+#include <fstream>
 #include <mutex>
 #include <string.h>
 #include <sys/time.h>
@@ -45,7 +46,7 @@ uint32_t find_file_size(FILE* fd) {
 
 namespace stop_and_wait {
 
-const long TIME_OUT = 100000; // 0.1 sec
+const long TIME_OUT = 150000; // 0.15 sec
 
 bool recv_ack(const uint32_t seqno, udp_util::udpsocket* sock, const long time_out = TIME_OUT) {
     ack_packet ack;
@@ -71,6 +72,7 @@ int send_packet_till_ack(udp_util::udpsocket* sock, const packet* pckt) {
                 perror("server: error sending pckt!");
                 exit(-1);
             }
+            else if (sent == 0) continue;
             cout << pckt->seqno << "- sent " << sent << " bytes" << endl;
         }
     } while(!recv_ack(pckt->seqno, sock));
@@ -97,7 +99,7 @@ int send_file(udp_util::udpsocket* sock, FILE* fd, int file_size) {
 } // namespace stop_and_wait
 
 namespace selective_repeat {
-const unsigned long long TIME_OUT = 200000;
+const unsigned long long TIME_OUT = 150000;
 
 mutex cout_lock;
 mutex ack_lock;
@@ -107,6 +109,7 @@ char file_data[FILE_BUFFER_SIZE];
 
 atomic<int> first_byte_seqno;
 atomic<bool> g_finished;
+int maximum_window;
 
 
 class window {
@@ -131,7 +134,7 @@ public:
     void increase_window() {
         mtx.lock();
         w += BUFFER_SIZE;
-        w = min(w, FILE_BUFFER_SIZE);
+        w = min(w, maximum_window);
         mtx.unlock();
     }
 
@@ -142,6 +145,10 @@ private:
     int w;
     mutex mtx;
 };
+
+void set_window(int max_size) {
+    maximum_window = max_size;
+}
 
 void reset_global() {
     g_finished = false;
@@ -275,7 +282,7 @@ void send_first_ack(udp_util::udpsocket* sock, int filesize) {
 }
 
 /// Return number of bytes sent or -1 if error happened
-int send_file(const char* file_name, udp_util::udpsocket* sock) {
+int send_file(const char* file_name, udp_util::udpsocket* sock, int max_window_size) {
     FILE* fd = fopen(file_name, "r");
     if (fd == NULL) {
         cerr << "File " << file_name << " NOT FOUND 404" << endl;
@@ -290,19 +297,33 @@ int send_file(const char* file_name, udp_util::udpsocket* sock) {
 
     send_first_ack(sock, file_size);
     int sent = -1;
-    if (STOP_AND_WAIT) {
+    if (max_window_size < 1) {
         sent = stop_and_wait::send_file(sock, fd, file_size);
     } else {
+        selective_repeat::set_window(max_window_size);
         sent = selective_repeat::send_file(sock, fd, file_size);
     }
     fclose(fd);
     return sent;
 }
 
-int main() {
-    udp_util::udpsocket sock = udp_util::create_socket(4444);
+int main(int argc, char* argv[]) {
+
+    if (argc < 1) {
+        cout << "Error: you  should provide input file" << endl;
+        exit(-1);
+    }
+    int server_port, max_window_size;
+    double plp, seed;
+    char path[BUFFER_SIZE] = ROOT;
+    strcat(path, argv[1]);
+    ifstream input_file(path);
+    input_file >> server_port >> max_window_size >> seed >> plp;
+    input_file.close();
+
+    udp_util::udpsocket sock = udp_util::create_socket(server_port);
     /* set PLP and random seed */
-    udp_util::randrop(0.0);
+    udp_util::randrop(plp, seed);
 
     while(true) {
         /* Block until receiving a request from a client */
@@ -323,7 +344,9 @@ int main() {
 
             char full_path[BUFFER_SIZE] = ROOT;
             strncat(full_path, filename, BUFFER_SIZE - strlen(ROOT));
-            cout << "Sent " << send_file(full_path, &sock2) << endl;
+
+            cout << "Sent " << send_file(full_path, &sock2, max_window_size) << endl;
+            //_exit(0);
         }
     }
     cout << "Finished" << endl;

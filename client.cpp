@@ -2,11 +2,11 @@
 #include <string.h>
 #include <arpa/inet.h>
 #include <fstream>
+#include <sys/time.h>
 
 #include "udp-util.h"
 
 #define ROOT "client_root/"
-#define STOP_AND_WAIT 0
 
 #define FILE_BUFFER_SIZE 100000
 #define BUFFER_SIZE 250
@@ -32,6 +32,7 @@ struct ack_packet {
 };
 
 const unsigned long long TIME_OUT = 999999;
+unsigned long received_packets = 0;
 
 int send_ack(udp_util::udpsocket* sock, const int ackno, const int len) {
     ack_packet ack;
@@ -57,6 +58,9 @@ int receive_file(udp_util::udpsocket* sock, const char* filename, const int file
             perror("client: recvfrom failed");
             break;
         }
+
+        received_packets++;
+
         cout << "expected packet: " << curr_pckt_no << endl;
         cout << "received packet: " << curr_pckt.seqno << endl;
         cout << "client: received " << recv_bytes << " bytes" << endl;
@@ -82,6 +86,10 @@ const unsigned long long TIME_OUT = 500000; // 0.5 sec
 
 int window_size;
 
+void set_window(int s) {
+    window_size = s;
+}
+
 void decrease_window() {
     window_size /= 2;
     window_size = max(window_size, BUFFER_SIZE);
@@ -100,7 +108,7 @@ int receive_file(udp_util::udpsocket* sock, const char* filename, const int file
     char file_data[FILE_BUFFER_SIZE];
 
     int buf_base = 0, recvbase = 0;
-    window_size = 5 * BUFFER_SIZE;
+
     memset(acked, 0, sizeof(acked));
     while(recvbase + buf_base < filesize) {
         /// TODO use circular queue
@@ -120,6 +128,8 @@ int receive_file(udp_util::udpsocket* sock, const char* filename, const int file
             perror("client: recvfrom failed");
             break;
         }
+
+        received_packets++;
 
         int window_start = recvbase + buf_base;
         int window_len = min(window_size, FILE_BUFFER_SIZE - buf_base);
@@ -188,23 +198,43 @@ int request_file(udp_util::udpsocket* sock, const char* filename) {
 }
 
 int main(int argc, char* argv[]) {
-    udp_util::udpsocket sock = udp_util::create_socket(atoi(argv[2]), 4444);
 
-    int filesize = request_file(&sock, argv[1]);
+    if (argc < 1) {
+        cout << "Error: you  should provide input file" << endl;
+        exit(-1);
+    }
+    int client_port, server_port, window_size;
+    char file_name[BUFFER_SIZE], path[BUFFER_SIZE] = ROOT;
+    strcat(path, argv[1]);
+    ifstream input_file(path);
+    input_file >> server_port >> client_port >> file_name >> window_size;
+    input_file.close();
 
+    udp_util::udpsocket sock = udp_util::create_socket(client_port, server_port);
+
+    int filesize = request_file(&sock, file_name);
     if (filesize < 0) {
         return -1;
     }
 
     char full_path[BUFFER_SIZE] = ROOT;
-    if (argc >= 2) {
-        strncat(full_path, argv[1], BUFFER_SIZE - strlen(ROOT));
-    }
-    if (STOP_AND_WAIT) {
+    strncat(full_path, file_name, BUFFER_SIZE - strlen(ROOT));
+
+    timeval start_time, finish_time, elapsed_time;
+    gettimeofday(&start_time, NULL);
+
+    if (window_size < 1) {
         stop_and_wait::receive_file(&sock, full_path, filesize);
     } else {
+        selective_repeat::set_window(window_size);
         selective_repeat::receive_file(&sock, full_path, filesize);
     }
+
+    gettimeofday(&finish_time, NULL);
+    timersub(&finish_time, &start_time, &elapsed_time);
+    cout << "Number of packets: " << received_packets << endl;
+    cout << "Elapsed time: " << elapsed_time.tv_sec << " s " << elapsed_time.tv_usec << " us" << endl;
+    cout << "Throughput: " << received_packets / elapsed_time.tv_sec << " packets/sec" << endl;
 
     return 0;
 }
